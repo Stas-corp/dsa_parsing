@@ -1,12 +1,13 @@
 import zipfile
 import shutil
 from pathlib import Path
+from multiprocessing import Manager, Queue, Process
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
 
-from csv_proccesing import csv_proccesing
+from csv_proccesing import csv_proccesing, writer_task
 
 BASE_URL = "https://dsa.court.gov.ua"
 START_URL = f"{BASE_URL}/dsa/inshe/oddata/532/?page=1"
@@ -38,7 +39,7 @@ def get_archives() -> list[tuple[str, str]]:
                 continue
             if "2025" in text:
                 urls_zip.append(href)
-                date_zip.append(text.split('від')[-1].strip())
+                date_zip.append(text.split("від")[-1].strip())
                 # if splash:
                 stop = True 
             elif "2024" in text:
@@ -66,17 +67,21 @@ def download_archive(url: str, date: str):
     return local_zip
 
 
-def extract_archive(path: Path, date: str):
-    tmpdir = Path('zip_dir')
+def extract_archive(path: Path, date: str, queue: Queue):
+    tmpdir = Path("zip_dir")
     with zipfile.ZipFile(path, "r") as zf:
-        target_path: Path = tmpdir / str(date[:-4]+'_unpack')
+        target_path: Path = tmpdir / str(date[:-4]+"_unpack")
         zf.extractall(target_path)
-        csv_proccesing(target_path)
+        csv_proccesing(target_path, queue)
         shutil.rmtree(target_path)
     path.unlink()
 
 
 def main():
+    mng = Manager()
+    queue = mng.Queue()
+    writer = Process(target=writer_task, args=(queue,))
+    writer.start()
     archives = get_archives()
     print(f"Found {len(archives)} archives")
     
@@ -90,9 +95,10 @@ def main():
         for future in as_completed(future_to_archive):
             date = future_to_archive[future]
             try:
-                print('try_extract')
+                print("try_extract")
                 local_zip = future.result()
-                process_futures.append(process_executor.submit(extract_archive, local_zip, date))
+                # extract_archive(local_zip, date, queue)
+                process_futures.append(process_executor.submit(extract_archive, local_zip, date, queue))
             except Exception as e:
                 print(f"Error downloading or processing archive {date}: {e}")
         
@@ -101,9 +107,12 @@ def main():
                 process_future.result()
             except Exception as e:
                 print(f"Error processing archive: {e}")
+        
+    queue.put(None)
+    writer.join()
 
 if __name__ == "__main__":
-    tmpdir = Path('zip_dir')
+    tmpdir = Path("zip_dir")
     if not tmpdir.exists():
         tmpdir.mkdir()
     main()
