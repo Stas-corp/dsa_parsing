@@ -2,10 +2,13 @@ from pathlib import Path
 
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from model import Case, session
+from model import Case, Session_maker
 
 def csv_proccesing(path: Path):
+    session = Session_maker()
+    
     for csv_file in path.rglob("*.csv"):
         try:
             df = pd.read_csv(
@@ -49,10 +52,11 @@ def csv_proccesing(path: Path):
             session.rollback()
             print(f"Error proccesing csv -> {csv_file}: {e}")
     
-    remove_full_duplicates()
+    remove_full_duplicates(session)
+    session.close()
 
 
-def remove_full_duplicates():
+def remove_full_duplicates(session: Session):
     session.execute(text(
     """
         DELETE FROM cases
@@ -69,4 +73,4 @@ def remove_full_duplicates():
 
 
 if __name__ == "__main__":
-    csv_proccesing('zip_dir\\ 16.07.2025_unpack')
+    csv_proccesing(Path('zip_dir\ 16.07.2025_unpack'))

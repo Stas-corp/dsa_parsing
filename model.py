@@ -23,5 +23,4 @@ class Case(Base):
 
 engine = create_engine("sqlite:///cases.db")
 Base.metadata.create_all(engine)
-Session = sessionmaker(bind=engine)
-session = Session()
+Session_maker = sessionmaker(bind=engine)

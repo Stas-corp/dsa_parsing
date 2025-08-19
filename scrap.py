@@ -1,17 +1,18 @@
 import zipfile
 import shutil
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
 
-import csv_proccesing
+from csv_proccesing import csv_proccesing
 
 BASE_URL = "https://dsa.court.gov.ua"
 START_URL = f"{BASE_URL}/dsa/inshe/oddata/532/?page=1"
 
 
-def get_archives():
+def get_archives() -> list[tuple[str, str]]:
     page = 3
     urls_zip = []
     date_zip = []
@@ -39,7 +40,7 @@ def get_archives():
                 urls_zip.append(href)
                 date_zip.append(text.split('від')[-1].strip())
                 # if splash:
-                stop = True
+                stop = True 
             elif "2024" in text:
                 splash = True
                 continue
@@ -54,32 +55,52 @@ def download_archive(url: str, date: str):
     print(f"Downloading: {url}")
     if not tmpdir.exists():
         tmpdir.mkdir()
-    local_zip:Path = tmpdir / date
+    local_zip: Path = tmpdir / date
 
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
         with open(local_zip, "wb") as f:
             shutil.copyfileobj(r.raw, f)
-            extract_archive(local_zip, date)
-        local_zip.unlink()
+            # extract_archive(local_zip, date)
+        # local_zip.unlink()
+    return local_zip
 
 
 def extract_archive(path: Path, date: str):
+    tmpdir = Path('zip_dir')
     with zipfile.ZipFile(path, "r") as zf:
-        target_path:Path = tmpdir / str(date[:-4]+'_unpack')
+        target_path: Path = tmpdir / str(date[:-4]+'_unpack')
         zf.extractall(target_path)
-        csv_proccesing.csv_proccesing(target_path)
+        csv_proccesing(target_path)
         shutil.rmtree(target_path)
+    path.unlink()
 
 
 def main():
     archives = get_archives()
     print(f"Found {len(archives)} archives")
-    # for url, date in archives:
-    #     download_archive(url, date)
-    url, date = archives[0]
-    download_archive(url, date)
+    
+    with ThreadPoolExecutor(max_workers=5) as download_executor, ProcessPoolExecutor(max_workers=4) as process_executor:
+        future_to_archive = {
+            download_executor.submit(download_archive, url, date): date for url, date in archives
+        }
+
+        process_futures = []
         
+        for future in as_completed(future_to_archive):
+            date = future_to_archive[future]
+            try:
+                print('try_extract')
+                local_zip = future.result()
+                process_futures.append(process_executor.submit(extract_archive, local_zip, date))
+            except Exception as e:
+                print(f"Error downloading or processing archive {date}: {e}")
+        
+        for process_future in as_completed(process_futures):
+            try:
+                process_future.result()
+            except Exception as e:
+                print(f"Error processing archive: {e}")
 
 if __name__ == "__main__":
     tmpdir = Path('zip_dir')
