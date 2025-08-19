@@ -5,7 +5,8 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from model import Case, Session_maker
+from db.model import Case, Session_maker
+from config.logger import logger
 
 
 def writer_task(queue: Queue, batch_size: int = 10_000):
@@ -23,9 +24,10 @@ def writer_task(queue: Queue, batch_size: int = 10_000):
                 session.add_all(buffer)
                 session.commit()
                 buffer.clear()
+                logger.info(f"In queue -> {queue.qsize()}")
             except Exception as e:
                 session.rollback()
-                print(f"Error writing to database -> {e}")
+                logger.error(f"Error writing to database -> {e}")
                 
     if buffer:
         try:
@@ -33,7 +35,7 @@ def writer_task(queue: Queue, batch_size: int = 10_000):
             session.commit()
         except Exception as e:
             session.rollback()
-            print(f"Error writing final batch to database -> {e}")
+            logger.error(f"Error writing final batch to database -> {e}")
             
     remove_full_duplicates(session)
     session.close()
@@ -50,7 +52,8 @@ def csv_proccesing(path: Path, queue: Queue):
                 )
             # print(f"readed {csv_file}")
         except Exception as e:
-            raise Exception(f"Error read csv -> {e}")
+            logger.error(f"Error read csv -> {e}")
+            raise
 
         for col in ["registration_date", "stage_date"]:
             if col in df.columns:
