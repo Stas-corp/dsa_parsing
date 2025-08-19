@@ -95,7 +95,7 @@ def main():
         for future in as_completed(future_to_archive):
             date = future_to_archive[future]
             try:
-                print("try_extract")
+                print(f"Start extract {date}")
                 local_zip = future.result()
                 # extract_archive(local_zip, date, queue)
                 process_futures.append(process_executor.submit(extract_archive, local_zip, date, queue))
@@ -103,8 +103,10 @@ def main():
                 print(f"Error downloading or processing archive {date}: {e}")
         
         for process_future in as_completed(process_futures):
+            print(f"Future {process_future}")
             try:
                 process_future.result()
+                print(f"Sucsses {process_future}")
             except Exception as e:
                 print(f"Error processing archive: {e}")
         

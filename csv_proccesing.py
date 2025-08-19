@@ -8,19 +8,32 @@ from sqlalchemy.orm import Session
 from model import Case, Session_maker
 
 
-def writer_task(queue: Queue):
+def writer_task(queue: Queue, batch_size: int = 10_000):
     session = Session_maker()
+    buffer = []
+    
     while True:
         case_data = queue.get()
-        if case_data is None:  # Завершение работы
+        if case_data is None:
             break
-        case = Case(**case_data)
-        session.add(case)
+        
+        buffer.append(Case(**case_data))
+        if len(buffer) >= batch_size:
+            try:
+                session.add_all(buffer)
+                session.commit()
+                buffer.clear()
+            except Exception as e:
+                session.rollback()
+                print(f"Error writing to database -> {e}")
+                
+    if buffer:
         try:
+            session.add_all(buffer)
             session.commit()
         except Exception as e:
             session.rollback()
-            print(f"Error writing to database: {e}")
+            print(f"Error writing final batch to database -> {e}")
             
     remove_full_duplicates(session)
     session.close()
