@@ -1,8 +1,11 @@
-import requests
 import zipfile
 import shutil
 from pathlib import Path
+
+import requests
 from bs4 import BeautifulSoup
+
+import csv_proccesing
 
 BASE_URL = "https://dsa.court.gov.ua"
 START_URL = f"{BASE_URL}/dsa/inshe/oddata/532/?page=1"
@@ -34,9 +37,9 @@ def get_archives():
                 continue
             if "2025" in text:
                 urls_zip.append(href)
-                date_zip.append(text.split('від')[-1])
-                if splash:
-                    stop = True
+                date_zip.append(text.split('від')[-1].strip())
+                # if splash:
+                stop = True
             elif "2024" in text:
                 splash = True
                 continue
@@ -47,27 +50,39 @@ def get_archives():
     return list(zip(urls_zip, date_zip))
 
 
-def process_archive(url, date):
+def download_archive(url: str, date: str):
     print(f"Downloading: {url}")
-    tmpdir = Path('zip_dir')
     if not tmpdir.exists():
         tmpdir.mkdir()
-    local_zip = tmpdir / date
+    local_zip:Path = tmpdir / date
 
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
         with open(local_zip, "wb") as f:
             shutil.copyfileobj(r.raw, f)
+            extract_archive(local_zip, date)
+        local_zip.unlink()
 
-    with zipfile.ZipFile(local_zip, "r") as zf:
-        zf.extractall(tmpdir / str(date[:-4]+'_unpack'))
+
+def extract_archive(path: Path, date: str):
+    with zipfile.ZipFile(path, "r") as zf:
+        target_path:Path = tmpdir / str(date[:-4]+'_unpack')
+        zf.extractall(target_path)
+        csv_proccesing.csv_proccesing(target_path)
+        shutil.rmtree(target_path)
 
 
 def main():
     archives = get_archives()
     print(f"Found {len(archives)} archives")
-    for url, date in archives:
-        process_archive(url, date)
+    # for url, date in archives:
+    #     download_archive(url, date)
+    url, date = archives[0]
+    download_archive(url, date)
+        
 
 if __name__ == "__main__":
+    tmpdir = Path('zip_dir')
+    if not tmpdir.exists():
+        tmpdir.mkdir()
     main()
