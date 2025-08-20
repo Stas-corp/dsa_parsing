@@ -9,7 +9,7 @@ from db.model import Case, Session_maker
 from config.logger import logger
 
 
-def writer_task(queue: Queue, batch_size: int = 10_000):
+def writer_task(queue: Queue, batch_size: int = 15_000):
     session = Session_maker()
     buffer = []
     
@@ -28,6 +28,9 @@ def writer_task(queue: Queue, batch_size: int = 10_000):
             except Exception as e:
                 session.rollback()
                 logger.error(f"Error writing to database -> {e}")
+            logger.info("Remove full duplicates")
+            
+    remove_full_duplicates(session)
                 
     if buffer:
         try:
@@ -37,7 +40,6 @@ def writer_task(queue: Queue, batch_size: int = 10_000):
             session.rollback()
             logger.error(f"Error writing final batch to database -> {e}")
             
-    remove_full_duplicates(session)
     session.close()
 
 

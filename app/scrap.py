@@ -1,3 +1,4 @@
+import time
 import zipfile
 import shutil
 from pathlib import Path
@@ -12,10 +13,11 @@ from config.logger import logger
 
 BASE_URL = "https://dsa.court.gov.ua"
 START_URL = f"{BASE_URL}/dsa/inshe/oddata/532/?page=1"
+MAX_QUEUE_SIZE = 200_000
 
 
 def get_archives() -> list[tuple[str, str]]:
-    page = 3
+    page = 1
     urls_zip = []
     date_zip = []
     while True:
@@ -41,8 +43,8 @@ def get_archives() -> list[tuple[str, str]]:
             if "2025" in text:
                 urls_zip.append(href)
                 date_zip.append(text.split("від")[-1].strip())
-                # if splash:
-                stop = True 
+                if splash:
+                    stop = True 
             elif "2024" in text:
                 splash = True
                 continue
@@ -53,7 +55,8 @@ def get_archives() -> list[tuple[str, str]]:
     return list(zip(urls_zip, date_zip))
 
 
-def download_archive(url: str, date: str, dir: Path):
+def download_archive(url: str, date: str, dir: Path, queue: Queue):
+
     logger.info(f"Downloading: {url}")
     local_zip: Path = dir / date
 
@@ -63,6 +66,15 @@ def download_archive(url: str, date: str, dir: Path):
             shutil.copyfileobj(r.raw, f)
             # extract_archive(local_zip, date)
         # local_zip.unlink()
+        
+    if queue.qsize() > MAX_QUEUE_SIZE:
+        logger.info("Queue full, waiting to download...")
+        while queue.qsize() > 30000:
+            
+            time.sleep(5)
+        else:
+            logger.info("Queue empty!")
+            
     logger.info(f"Downloaded: {date}")
     return local_zip
 
@@ -90,9 +102,9 @@ def main():
     archives = get_archives()
     logger.info(f"Found {len(archives)} archives")
     
-    with ThreadPoolExecutor(max_workers=5) as download_executor, ProcessPoolExecutor(max_workers=4) as process_executor:
+    with ThreadPoolExecutor(max_workers=3) as download_executor, ProcessPoolExecutor(max_workers=6) as process_executor:
         future_to_archive = {
-            download_executor.submit(download_archive, url, date, zipdir): date for url, date in archives
+            download_executor.submit(download_archive, url, date, zipdir, queue): date for url, date in archives
         }
 
         process_futures = []
