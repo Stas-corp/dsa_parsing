@@ -1,3 +1,4 @@
+import time
 import zipfile
 import shutil
 from pathlib import Path
@@ -7,14 +8,16 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 import requests
 from bs4 import BeautifulSoup
 
-from csv_proccesing import csv_proccesing, writer_task
+from db.csv_proccesing import csv_proccesing, writer_task
+from config.logger import logger
 
 BASE_URL = "https://dsa.court.gov.ua"
 START_URL = f"{BASE_URL}/dsa/inshe/oddata/532/?page=1"
+MAX_QUEUE_SIZE = 200_000
 
 
 def get_archives() -> list[tuple[str, str]]:
-    page = 3
+    page = 1
     urls_zip = []
     date_zip = []
     while True:
@@ -40,8 +43,8 @@ def get_archives() -> list[tuple[str, str]]:
             if "2025" in text:
                 urls_zip.append(href)
                 date_zip.append(text.split("від")[-1].strip())
-                # if splash:
-                stop = True 
+                if splash:
+                    stop = True 
             elif "2024" in text:
                 splash = True
                 continue
@@ -52,11 +55,10 @@ def get_archives() -> list[tuple[str, str]]:
     return list(zip(urls_zip, date_zip))
 
 
-def download_archive(url: str, date: str):
-    print(f"Downloading: {url}")
-    if not tmpdir.exists():
-        tmpdir.mkdir()
-    local_zip: Path = tmpdir / date
+def download_archive(url: str, date: str, dir: Path, queue: Queue):
+
+    logger.info(f"Downloading: {url}")
+    local_zip: Path = dir / date
 
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
@@ -64,6 +66,16 @@ def download_archive(url: str, date: str):
             shutil.copyfileobj(r.raw, f)
             # extract_archive(local_zip, date)
         # local_zip.unlink()
+        
+    if queue.qsize() > MAX_QUEUE_SIZE:
+        logger.info("Queue full, waiting to download...")
+        while queue.qsize() > 30000:
+            
+            time.sleep(5)
+        else:
+            logger.info("Queue empty!")
+            
+    logger.info(f"Downloaded: {date}")
     return local_zip
 
 
@@ -78,16 +90,21 @@ def extract_archive(path: Path, date: str, queue: Queue):
 
 
 def main():
+    zipdir = Path("zip_dir")
+    if not zipdir.exists():
+        zipdir.mkdir()
+    
     mng = Manager()
     queue = mng.Queue()
     writer = Process(target=writer_task, args=(queue,))
     writer.start()
+    logger.info("Start get archives...")
     archives = get_archives()
-    print(f"Found {len(archives)} archives")
+    logger.info(f"Found {len(archives)} archives")
     
-    with ThreadPoolExecutor(max_workers=5) as download_executor, ProcessPoolExecutor(max_workers=4) as process_executor:
+    with ThreadPoolExecutor(max_workers=3) as download_executor, ProcessPoolExecutor(max_workers=6) as process_executor:
         future_to_archive = {
-            download_executor.submit(download_archive, url, date): date for url, date in archives
+            download_executor.submit(download_archive, url, date, zipdir, queue): date for url, date in archives
         }
 
         process_futures = []
@@ -95,26 +112,24 @@ def main():
         for future in as_completed(future_to_archive):
             date = future_to_archive[future]
             try:
-                print(f"Start extract {date}")
+                logger.info(f"Start extract {date}")
                 local_zip = future.result()
                 # extract_archive(local_zip, date, queue)
                 process_futures.append(process_executor.submit(extract_archive, local_zip, date, queue))
             except Exception as e:
-                print(f"Error downloading or processing archive {date}: {e}")
+                logger.error(f"Error downloading or processing archive {date}: {e}")
         
         for process_future in as_completed(process_futures):
-            print(f"Future {process_future}")
+            logger.info(f"Future {process_future}")
             try:
                 process_future.result()
-                print(f"Sucsses {process_future}")
+                logger.info(f"Sucsses {process_future}")
             except Exception as e:
-                print(f"Error processing archive: {e}")
+                logger.error(f"Error processing archive: {e}")
         
     queue.put(None)
     writer.join()
 
+
 if __name__ == "__main__":
-    tmpdir = Path("zip_dir")
-    if not tmpdir.exists():
-        tmpdir.mkdir()
     main()
