@@ -1,49 +1,25 @@
 from pathlib import Path
-from multiprocessing import Queue
 
 import pandas as pd
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
-from db.model import Case, Session_maker
+from db.model import Case
+from db.db import Session_maker
 from config.logger import logger
 
 
-def writer_task(queue: Queue, batch_size: int = 15_000):
+def writer_task(data: dict):
     session = Session_maker()
-    buffer = []
-    
-    while True:
-        case_data = queue.get()
-        if case_data is None:
-            break
-        
-        buffer.append(Case(**case_data))
-        if len(buffer) >= batch_size:
-            try:
-                session.add_all(buffer)
-                session.commit()
-                buffer.clear()
-                logger.info(f"In queue -> {queue.qsize()}")
-            except Exception as e:
-                session.rollback()
-                logger.error(f"Error writing to database -> {e}")
-            logger.info("Remove full duplicates")
-            
-    remove_full_duplicates(session)
-                
-    if buffer:
-        try:
-            session.add_all(buffer)
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Error writing final batch to database -> {e}")
-            
+    try:
+        session.bulk_insert_mappings(Case, data)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error writing to database -> {e}")
     session.close()
 
 
-def csv_proccesing(path: Path, queue: Queue):
+def csv_proccesing(path: Path) -> dict:
     for csv_file in path.rglob("*.csv"):
         try:
             df = pd.read_csv(
@@ -52,7 +28,7 @@ def csv_proccesing(path: Path, queue: Queue):
                     quotechar='"',
                     on_bad_lines='skip'
                 )
-            # print(f"readed {csv_file}")
+            logger.info(f"read {csv_file.name}")
         except Exception as e:
             logger.error(f"Error read csv -> {e}")
             raise
@@ -64,6 +40,7 @@ def csv_proccesing(path: Path, queue: Queue):
 
         df = df.astype(object).where(pd.notnull(df), None)
 
+        data = []
         for _, row in df.iterrows():
             case_data = {
                 "court_name": row.get("court_name"),
@@ -80,33 +57,60 @@ def csv_proccesing(path: Path, queue: Queue):
                 "type": row.get("type"),
                 "description": row.get("description"),
             }
-            queue.put(case_data)
-
-        # try:
-        #     session.commit()
-        # except Exception as e:
-        #     session.rollback()
-        #     print(f"Error proccesing csv -> {csv_file}: {e}")
-    
-    # remove_full_duplicates(session)
-    # session.close()
+            data.append(case_data)
+            
+        logger.info(f"{csv_file.name} len data -> {len(data)}")
+        writer_task(data)
+        logger.info(f"{csv_file.name} commit sucsses.")
 
 
-def remove_full_duplicates(session: Session):
+def remove_full_duplicates():
+    logger.info(f"Start remove_full_duplicates")
+    session = Session_maker()
     session.execute(text(
     """
-        DELETE FROM cases
-        WHERE id NOT IN (
-            SELECT MIN(id)
+        WITH cte AS (
+            SELECT *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY court_name, case_number, case_proc, registration_date,
+                        judge, judges, participants, stage_date, stage_name,
+                        cause_result, cause_dep, type, description
+                    ORDER BY id
+                ) AS rn
             FROM cases
-            GROUP BY court_name, case_number, case_proc, registration_date,
-                judge, judges, participants, stage_date, stage_name,
-                cause_result, cause_dep, type, description
         )
+        DELETE FROM cte WHERE rn > 1;
     """
     ))
     session.commit()
+    logger.info(f"Sucsses remove_full_duplicates")
+    session.close()
 
+
+def main():
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    paths = [
+        Path('zip_dir\\19.08.2025_unpack'),
+        Path('zip_dir\\21.08.2025_unpack'),
+        Path('zip_dir\\22.08.2025_unpack')]
+    
+    with ProcessPoolExecutor(max_workers=3) as process_executor:
+        process_futures = []
+        for p in paths:
+            process_futures.append(process_executor.submit(csv_proccesing, p))
+        
+        
+        for process_future in as_completed(process_futures):
+            logger.info(f"Future {process_future}")
+            try:
+                process_future.result()
+                logger.info(f"Sucsses {process_future}")
+            except Exception as e:
+                logger.error(f"Error processing archive: {e}")
+                
+    
+    remove_full_duplicates()
+    # csv_proccesing(Path('zip_dir\\22.08.2025_unpack'))
 
 if __name__ == "__main__":
-    csv_proccesing(Path('zip_dir\16.07.2025_unpack'))
+    csv_proccesing(Path('zip_dir\22.08.2025_unpack'))
